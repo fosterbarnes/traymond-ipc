@@ -2,6 +2,7 @@
 #include <windowsx.h>
 #include <string>
 #include <vector>
+#include <thread>
 
 #define VK_Z_KEY 0x5A
 // These keys are used to send windows to tray
@@ -10,9 +11,24 @@
 
 #define WM_ICON 0x1C0A
 #define WM_OURICON 0x1C0B
+#define WM_IPC_COMMAND 0x1C0C
+#define WM_SAVE_TIMER 0x1C0D
 #define EXIT_ID 0x99
 #define SHOW_ALL_ID 0x98
 #define MAXIMUM_WINDOWS 100
+
+// IPC Commands
+#define IPC_MINIMIZE_CURRENT 1
+#define IPC_MINIMIZE_BY_HANDLE 2
+#define IPC_SHOW_ALL 3
+#define IPC_EXIT 4
+
+// IPC Message structure
+typedef struct IPC_MESSAGE {
+    int command;
+    HWND windowHandle;
+    char windowTitle[256];
+} IPC_MESSAGE;
 
 // Stores hidden window record.
 typedef struct HIDDEN_WINDOW {
@@ -26,9 +42,75 @@ typedef struct TRCONTEXT {
   HIDDEN_WINDOW icons[MAXIMUM_WINDOWS];
   HMENU trayMenu;
   int iconIndex; // How many windows are currently hidden
+  bool showTrayIcon; // Whether to show the main tray icon
 } TRCONTEXT;
 
 HANDLE saveFile;
+HANDLE ipcPipe = INVALID_HANDLE_VALUE;
+HANDLE ipcThread = NULL;
+HANDLE ipcStopEvent = NULL;
+bool ipcRunning = false;
+bool savePending = false;
+
+// Function to parse command line arguments
+bool parseCommandLine(LPSTR lpCmdLine, bool* showTrayIcon) {
+    *showTrayIcon = true; // Default to showing tray icon
+    
+    if (lpCmdLine && strlen(lpCmdLine) > 0) {
+        // Check for -noTray flag
+        if (strstr(lpCmdLine, "-noTray") != NULL) {
+            *showTrayIcon = false;
+        }
+    }
+    
+    return true;
+}
+
+// IPC Server thread function
+DWORD WINAPI IPCServerThread(LPVOID lpParam) {
+    TRCONTEXT* context = (TRCONTEXT*)lpParam;
+    
+    // Create named pipe once
+    ipcPipe = CreateNamedPipeA(
+        "\\\\.\\pipe\\traymond_ipc",
+        PIPE_ACCESS_DUPLEX,
+        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+        1,
+        sizeof(IPC_MESSAGE),
+        sizeof(IPC_MESSAGE),
+        0,
+        NULL
+    );
+    
+    if (ipcPipe == INVALID_HANDLE_VALUE) {
+        return 1; // Exit if we can't create the pipe
+    }
+    
+    while (ipcRunning) {
+        // Wait for client connection with timeout using event
+        DWORD waitResult = WaitForSingleObject(ipcStopEvent, 50); // Check every 50ms for better responsiveness
+        if (waitResult == WAIT_OBJECT_0) {
+            // Stop event was signaled
+            break;
+        }
+        
+        // Try to connect
+        if (ConnectNamedPipe(ipcPipe, NULL) || GetLastError() == ERROR_PIPE_CONNECTED) {
+            IPC_MESSAGE msg;
+            DWORD bytesRead;
+            
+            // Read message from client
+            if (ReadFile(ipcPipe, &msg, sizeof(IPC_MESSAGE), &bytesRead, NULL)) {
+                // Post message to main thread to handle the command
+                PostMessage(context->mainWindow, WM_IPC_COMMAND, 0, (LPARAM)&msg);
+            }
+            
+            DisconnectNamedPipe(ipcPipe);
+        }
+    }
+    
+    return 0;
+}
 
 // Saves our hidden windows so they can be restored in case
 // of crashing.
@@ -40,18 +122,17 @@ void save(const TRCONTEXT *context) {
   if (!context->iconIndex) {
     return;
   }
+  
+  char buffer[32];
   for (int i = 0; i < context->iconIndex; i++)
   {
     if (context->icons[i].window) {
-      std::string str;
-      str = std::to_string((long)context->icons[i].window);
-      str += ',';
-      const char *handleString = str.c_str();
-      WriteFile(saveFile, handleString, strlen(handleString), &numbytes, NULL);
+      int len = sprintf_s(buffer, sizeof(buffer), "%ld,", (long)context->icons[i].window);
+      if (len > 0) {
+        WriteFile(saveFile, buffer, len, &numbytes, NULL);
+      }
     }
-
   }
-
 }
 
 // Restores a window
@@ -62,19 +143,15 @@ void showWindow(TRCONTEXT *context, LPARAM lParam) {
       ShowWindow(context->icons[i].window, SW_SHOW);
       Shell_NotifyIcon(NIM_DELETE, &context->icons[i].icon);
       SetForegroundWindow(context->icons[i].window);
-      context->icons[i] = {};
-      std::vector<HIDDEN_WINDOW> temp = std::vector<HIDDEN_WINDOW>(context->iconIndex);
-      // Restructure array so there are no holes
-      for (int j = 0, x = 0; j < context->iconIndex; j++)
-      {
-        if (context->icons[j].window) {
-          temp[x] = context->icons[j];
-          x++;
-        }
+      
+      // Move the last element to this position to avoid holes
+      if (i < context->iconIndex - 1) {
+        context->icons[i] = context->icons[context->iconIndex - 1];
       }
-      memcpy_s(context->icons, sizeof(context->icons), &temp.front(), sizeof(HIDDEN_WINDOW)*context->iconIndex);
+      context->icons[context->iconIndex - 1] = {};
       context->iconIndex--;
-      save(context);
+      
+      savePending = true;
       break;
     }
   }
@@ -111,7 +188,7 @@ void minimizeToTray(TRCONTEXT *context, long restoreWindow) {
     }
   }
   if (context->iconIndex == MAXIMUM_WINDOWS) {
-    MessageBox(NULL, "Error! Too many hidden windows. Please unhide some.", "Traymond", MB_OK | MB_ICONERROR);
+    MessageBoxA(NULL, "Error! Too many hidden windows. Please unhide some.", "Traymond IPC", MB_OK | MB_ICONERROR);
     return;
   }
   ULONG_PTR icon = GetClassLongPtr(currWin, GCLP_HICONSM);
@@ -138,7 +215,7 @@ void minimizeToTray(TRCONTEXT *context, long restoreWindow) {
   Shell_NotifyIcon(NIM_SETVERSION, &nid);
   ShowWindow(currWin, SW_HIDE);
   if (!restoreWindow) {
-    save(context);
+    savePending = true;
   }
 
 }
@@ -152,7 +229,7 @@ void createTrayIcon(HWND mainWindow, HINSTANCE hInstance, NOTIFYICONDATA* icon) 
   icon->uVersion = NOTIFYICON_VERSION_4;
   icon->uID = reinterpret_cast<UINT>(mainWindow);
   icon->uCallbackMessage = WM_OURICON;
-  strcpy_s(icon->szTip, "Traymond");
+  strcpy_s(icon->szTip, sizeof(icon->szTip), "Traymond IPC");
   Shell_NotifyIcon(NIM_ADD, icon);
   Shell_NotifyIcon(NIM_SETVERSION, icon);
 }
@@ -189,19 +266,41 @@ void showAllWindows(TRCONTEXT *context) {
     Shell_NotifyIcon(NIM_DELETE, &context->icons[i].icon);
     context->icons[i] = {};
   }
-  save(context);
+  savePending = true;
   context->iconIndex = 0;
 }
 
 void exitApp() {
+  // Stop IPC server thread first
+  if (ipcThread) {
+    ipcRunning = false;
+    // Signal the thread to stop using the event
+    if (ipcStopEvent) {
+      SetEvent(ipcStopEvent);
+    }
+    // Wait a short time for the thread to exit gracefully
+    if (WaitForSingleObject(ipcThread, 2000) == WAIT_TIMEOUT) {
+      // If thread doesn't exit gracefully, terminate it
+      TerminateThread(ipcThread, 0);
+    }
+    CloseHandle(ipcThread);
+    ipcThread = NULL;
+  }
+  
+  // Clean up the stop event
+  if (ipcStopEvent) {
+    CloseHandle(ipcStopEvent);
+    ipcStopEvent = NULL;
+  }
+  
   PostQuitMessage(0);
 }
 
 // Creates and reads the save file to restore hidden windows in case of unexpected termination
 void startup(TRCONTEXT *context) {
-  if ((saveFile = CreateFile("traymond.dat", GENERIC_READ | GENERIC_WRITE, \
+  if ((saveFile = CreateFile("traymond-ipc.dat", GENERIC_READ | GENERIC_WRITE, \
     0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL)) == INVALID_HANDLE_VALUE) {
-    MessageBox(NULL, "Error! Traymond could not create a save file.", "Traymond", MB_OK | MB_ICONERROR);
+    MessageBoxA(NULL, "Error! Traymond IPC could not create a save file.", "Traymond IPC", MB_OK | MB_ICONERROR);
     exitApp();
   }
   // Check if we've crashed (i. e. there is a save file) during current uptime and
@@ -225,25 +324,33 @@ void startup(TRCONTEXT *context) {
       return;
     }
 
-    std::vector<char> contents = std::vector<char>(fileSize);
-    ReadFile(saveFile, &contents.front(), fileSize, &numbytes, NULL);
-    char handle[10];
-    int index = 0;
-    for (size_t i = 0; i < fileSize; i++)
-    {
-      if (contents[i] != ',') {
-        handle[index] = contents[i];
-        index++;
+    char* contents = (char*)malloc(fileSize + 1);
+    if (contents) {
+      ReadFile(saveFile, contents, fileSize, &numbytes, NULL);
+      contents[fileSize] = '\0';
+      
+      char handle[16];
+      int index = 0;
+      for (size_t i = 0; i < fileSize; i++)
+      {
+        if (contents[i] != ',') {
+          handle[index] = contents[i];
+          index++;
+        }
+        else {
+          handle[index] = '\0';
+          index = 0;
+          minimizeToTray(context, atol(handle));
+        }
       }
-      else {
-        index = 0;
-        minimizeToTray(context, std::stoi(std::string(handle)));
-        memset(handle, 0, sizeof(handle));
-      }
+      free(contents);
+      
+      char restore_message[256];
+      sprintf_s(restore_message, sizeof(restore_message), 
+        "Traymond IPC had previously been terminated unexpectedly.\n\nRestored %d %s.", 
+        context->iconIndex, context->iconIndex > 1 ? "icons" : "icon");
+      MessageBoxA(NULL, restore_message, "Traymond IPC", MB_OK);
     }
-    std::string restore_message = "Traymond had previously been terminated unexpectedly.\n\nRestored " + \
-      std::to_string(context->iconIndex) + (context->iconIndex > 1 ? " icons." : " icon.");
-    MessageBox(NULL, restore_message.c_str(), "Traymond", MB_OK);
     }
   }
 
@@ -259,7 +366,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     }
     break;
   case WM_OURICON:
-    if (LOWORD(lParam) == WM_RBUTTONUP) {
+    if (LOWORD(lParam) == WM_RBUTTONUP && context->showTrayIcon) {
       SetForegroundWindow(hwnd);
       GetCursorPos(&pt);
       TrackPopupMenuEx(context->trayMenu, \
@@ -282,6 +389,31 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
   case WM_HOTKEY: // We only have one hotkey, so no need to check the message
     minimizeToTray(context, NULL);
     break;
+  case WM_IPC_COMMAND:
+    {
+      IPC_MESSAGE* msg = (IPC_MESSAGE*)lParam;
+      switch (msg->command) {
+        case IPC_MINIMIZE_CURRENT:
+          minimizeToTray(context, NULL);
+          break;
+        case IPC_MINIMIZE_BY_HANDLE:
+          minimizeToTray(context, (long)msg->windowHandle);
+          break;
+        case IPC_SHOW_ALL:
+          showAllWindows(context);
+          break;
+        case IPC_EXIT:
+          exitApp();
+          break;
+      }
+    }
+    break;
+  case WM_SAVE_TIMER:
+    if (savePending) {
+      save(context);
+      savePending = false;
+    }
+    break;
   default:
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
   }
@@ -297,19 +429,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
   NOTIFYICONDATA icon = {};
 
+  // Parse command line arguments first
+  bool showTrayIcon = true;
+  parseCommandLine(lpCmdLine, &showTrayIcon);
+  context.showTrayIcon = showTrayIcon;
+
   // Mutex to allow only one instance
-  const char szUniqueNamedMutex[] = "traymond_mutex";
+  const char szUniqueNamedMutex[] = "traymond_ipc_mutex";
   HANDLE mutex = CreateMutex(NULL, TRUE, szUniqueNamedMutex);
   if (GetLastError() == ERROR_ALREADY_EXISTS)
   {
-    MessageBox(NULL, "Error! Another instance of Traymond is already running.", "Traymond", MB_OK | MB_ICONERROR);
+    MessageBoxA(NULL, "Error! Another instance of Traymond IPC is already running.", "Traymond IPC", MB_OK | MB_ICONERROR);
     return 1;
   }
 
   BOOL bRet;
   MSG msg;
 
-  const char CLASS_NAME[] = "Traymond";
+  const char CLASS_NAME[] = "TraymondIPC";
 
   WNDCLASS wc = {};
   wc.lpfnWndProc = WindowProc;
@@ -330,13 +467,31 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
   SetWindowLongPtr(context.mainWindow, GWLP_USERDATA, reinterpret_cast<LONG>(&context));
 
   if (!RegisterHotKey(context.mainWindow, 0, MOD_KEY | MOD_NOREPEAT, TRAY_KEY)) {
-    MessageBox(NULL, "Error! Could not register the hotkey.", "Traymond", MB_OK | MB_ICONERROR);
+    MessageBoxA(NULL, "Error! Could not register the hotkey.", "Traymond IPC", MB_OK | MB_ICONERROR);
     return 1;
   }
 
-  createTrayIcon(context.mainWindow, hInstance, &icon);
+  // Create tray icon only if showTrayIcon is true
+  if (context.showTrayIcon) {
+    createTrayIcon(context.mainWindow, hInstance, &icon);
+  }
   createTrayMenu(&context.trayMenu);
   startup(&context);
+  
+  // Set up save timer (every 2 seconds)
+  SetTimer(context.mainWindow, WM_SAVE_TIMER, 2000, NULL);
+
+  // Start IPC server thread
+  ipcRunning = true;
+  ipcStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+  if (!ipcStopEvent) {
+    MessageBoxA(NULL, "Warning! Could not create IPC stop event.", "Traymond IPC", MB_OK | MB_ICONWARNING);
+  }
+  
+  ipcThread = CreateThread(NULL, 0, IPCServerThread, &context, 0, NULL);
+  if (!ipcThread) {
+    MessageBoxA(NULL, "Warning! Could not start IPC server thread.", "Traymond IPC", MB_OK | MB_ICONWARNING);
+  }
 
   while ((bRet = GetMessage(&msg, 0, 0, 0)) != 0)
   {
@@ -345,14 +500,46 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
   }
   // Clean up on exit;
+  KillTimer(context.mainWindow, WM_SAVE_TIMER);
+  if (savePending) {
+    save(&context);
+  }
   showAllWindows(&context);
-  Shell_NotifyIcon(NIM_DELETE, &icon);
+  // Only remove tray icon if it was created
+  if (context.showTrayIcon) {
+    Shell_NotifyIcon(NIM_DELETE, &icon);
+  }
+  
+  // Stop IPC server thread
+  if (ipcThread) {
+    ipcRunning = false;
+    // Signal the thread to stop using the event
+    if (ipcStopEvent) {
+      SetEvent(ipcStopEvent);
+    }
+    // Wait a short time for the thread to exit gracefully
+    if (WaitForSingleObject(ipcThread, 2000) == WAIT_TIMEOUT) {
+      // If thread doesn't exit gracefully, terminate it
+      TerminateThread(ipcThread, 0);
+    }
+    CloseHandle(ipcThread);
+  }
+  
+  // Clean up the stop event
+  if (ipcStopEvent) {
+    CloseHandle(ipcStopEvent);
+  }
+  
+  if (ipcPipe != INVALID_HANDLE_VALUE) {
+    CloseHandle(ipcPipe);
+  }
+  
   ReleaseMutex(mutex);
   CloseHandle(mutex);
   CloseHandle(saveFile);
   DestroyMenu(context.trayMenu);
   DestroyWindow(context.mainWindow);
-  DeleteFile("traymond.dat"); // No save file means we have exited gracefully
+  DeleteFile("traymond-ipc.dat"); // No save file means we have exited gracefully
   UnregisterHotKey(context.mainWindow, 0);
   return msg.wParam;
 }

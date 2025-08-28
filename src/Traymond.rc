@@ -34,17 +34,17 @@ BEGIN
 
             VALUE "CompanyName", "fcFn"
 
-            VALUE "FileDescription", "Traymond"
+            VALUE "FileDescription", "Traymond IPC"
 
             VALUE "FileVersion", "1.0.4"
 
-            VALUE "InternalName", "Traymond.exe"
+            VALUE "InternalName", "traymond-ipc.exe"
 
             VALUE "LegalCopyright", "Copyright (C) 2020 fcFn"
 
-            VALUE "OriginalFilename", "Traymond.exe"
+            VALUE "OriginalFilename", "traymond-ipc.exe"
 
-            VALUE "ProductName", "Traymond"
+            VALUE "ProductName", "Traymond IPC"
 
             VALUE "ProductVersion", "1.0.4"
 
