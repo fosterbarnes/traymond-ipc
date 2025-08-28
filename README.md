@@ -14,7 +14,7 @@ A binary is available [here](https://github.com/fosterbarnes/traymond-tcp/releas
 Installing
 ------------
 
-No installation required, just run Traymond.exe.
+No installation required, just run [traymond-tcp.exe](https://github.com/fosterbarnes/traymond-tcp/releases/download/v1.0.5/traymond-tcp.exe).
 
 Controls
 --------
