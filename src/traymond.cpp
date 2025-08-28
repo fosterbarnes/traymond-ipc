@@ -49,6 +49,7 @@ typedef struct TRCONTEXT {
   HMENU trayMenu;
   int iconIndex; // How many windows are currently hidden
   bool showTrayIcon; // Whether to show the main tray icon
+  bool showHotkey; // Whether to register and listen for the hotkey
 } TRCONTEXT;
 
 HANDLE saveFile;
@@ -70,9 +71,10 @@ void debugPrint(const char* format, ...) {
 }
 
 // Function to parse command line arguments
-bool parseCommandLine(LPSTR lpCmdLine, bool* showTrayIcon, bool* debugMode) {
+bool parseCommandLine(LPSTR lpCmdLine, bool* showTrayIcon, bool* debugMode, bool* showHotkey) {
     *showTrayIcon = true; // Default to showing tray icon
     *debugMode = false; // Default to no debug mode
+    *showHotkey = true; // Default to showing hotkey
     
     if (lpCmdLine && strlen(lpCmdLine) > 0) {
         // Check for -noTray flag
@@ -82,6 +84,10 @@ bool parseCommandLine(LPSTR lpCmdLine, bool* showTrayIcon, bool* debugMode) {
         // Check for -debug flag
         if (strstr(lpCmdLine, "-debug") != NULL) {
             *debugMode = true;
+        }
+        // Check for -noHotkey flag
+        if (strstr(lpCmdLine, "-noHotkey") != NULL) {
+            *showHotkey = false;
         }
     }
     
@@ -467,7 +473,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     }
     break;
   case WM_HOTKEY: // We only have one hotkey, so no need to check the message
-    minimizeToTray(context, NULL);
+    if (context->showHotkey) {
+      minimizeToTray(context, NULL);
+    }
     break;
   case WM_IPC_COMMAND:
     {
@@ -512,8 +520,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
   // Parse command line arguments first
   bool showTrayIcon = true;
   bool debugMode = false;
-  parseCommandLine(lpCmdLine, &showTrayIcon, &debugMode);
+  bool showHotkey = true;
+  parseCommandLine(lpCmdLine, &showTrayIcon, &debugMode, &showHotkey);
   context.showTrayIcon = showTrayIcon;
+  context.showHotkey = showHotkey;
   g_debugMode = debugMode; // Set global debug mode flag
 
   // Create console for debug output only if debug mode is enabled
@@ -556,9 +566,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
   // Store our context in main window for retrieval by WindowProc
   SetWindowLongPtr(context.mainWindow, GWLP_USERDATA, reinterpret_cast<LONG>(&context));
 
-  if (!RegisterHotKey(context.mainWindow, 0, MOD_KEY | MOD_NOREPEAT, TRAY_KEY)) {
-    MessageBoxA(NULL, "Error! Could not register the hotkey.", "Traymond IPC", MB_OK | MB_ICONERROR);
-    return 1;
+  // Register hotkey only if showHotkey is true
+  if (context.showHotkey) {
+    if (!RegisterHotKey(context.mainWindow, 0, MOD_KEY | MOD_NOREPEAT, TRAY_KEY)) {
+      MessageBoxA(NULL, "Error! Could not register the hotkey.", "Traymond IPC", MB_OK | MB_ICONERROR);
+      return 1;
+    }
   }
 
   // Create tray icon only if showTrayIcon is true
@@ -633,6 +646,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
   DestroyMenu(context.trayMenu);
   DestroyWindow(context.mainWindow);
   DeleteFile("traymond-tcp.dat"); // No save file means we have exited gracefully
-  UnregisterHotKey(context.mainWindow, 0);
+  // Only unregister hotkey if it was registered
+  if (context.showHotkey) {
+    UnregisterHotKey(context.mainWindow, 0);
+  }
   return msg.wParam;
 }

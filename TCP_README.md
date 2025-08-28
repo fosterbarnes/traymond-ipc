@@ -91,11 +91,27 @@ traymond-tcp.exe -noTray
 - Individual window icons still appear when windows are minimized
 - TCP functionality remains fully operational
 
+### -noHotkey
+Disables the hotkey functionality (Win+Shift+Z).
+
+**Usage**:
+```bash
+traymond-tcp.exe -noHotkey
+```
+
+**Effects**:
+- Disables the Win+Shift+Z hotkey for minimizing windows
+- TCP functionality remains fully operational
+- Tray icon functionality remains available
+
 ### Combining Flags
 You can combine multiple flags:
 
 ```bash
 traymond-tcp.exe -debug -noTray
+traymond-tcp.exe -debug -noHotkey
+traymond-tcp.exe -noTray -noHotkey
+traymond-tcp.exe -debug -noTray -noHotkey
 ```
 
 ## Usage Examples
@@ -139,6 +155,13 @@ For server environments or when you don't want the main tray icon:
 
 ```bash
 traymond-tcp.exe -noTray
+```
+
+### Server Mode
+For pure server environments where you only want TCP functionality:
+
+```bash
+traymond-tcp.exe -noTray -noHotkey
 ```
 
 ## Client Libraries
