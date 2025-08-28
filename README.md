@@ -5,11 +5,11 @@ A very simple app for minimizing any window to tray as an icon. Runs in the back
 
 In case it terminates unexpectedly, restart the app and all the icons for minimized windows will come back.
 
-Windows 7 or later required.
+Windows 10 or later required.
 
-**NB**: Does **_NOT_** work with apps from the Microsoft Store (see [#3](/../../issues/3)).
+**NB**: Does **_NOT_** work with apps from the Microsoft Store.
 
-A binary is available [here](https://github.com/fcFn/traymond/releases).
+A binary is available [here](https://github.com/fosterbarnes/traymond-ipc/releases).
 
 Installing
 ------------
@@ -50,7 +50,3 @@ Defines at the top of the file control the key and the mod key for sending windo
 #define TRAY_KEY VK_Z_KEY
 #define MOD_KEY MOD_WIN + MOD_SHIFT
 ```
-Contributing
-------------
-
-See [Contributing](https://github.com/fcFn/traymond/blob/master/CONTRIBUTING.md).
