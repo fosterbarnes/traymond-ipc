@@ -77,6 +77,7 @@ traymond-tcp.exe -debug
 - Creates a console window for debug output
 - Shows detailed logging of TCP server operations
 - Displays connection status and received commands
+- Outputs startup messages and error information
 
 ### -noTray
 Disables the main tray icon (only affects the main application icon, not individual window icons).
@@ -90,6 +91,7 @@ traymond-tcp.exe -noTray
 - Hides the main Traymond IPC tray icon
 - Individual window icons still appear when windows are minimized
 - TCP functionality remains fully operational
+- Right-click menu functionality is disabled
 
 ### -noHotkey
 Disables the hotkey functionality (Win+Shift+Z).
@@ -105,7 +107,7 @@ traymond-tcp.exe -noHotkey
 - Tray icon functionality remains available
 
 ### Combining Flags
-You can combine multiple flags:
+You can combine multiple flags in any order:
 
 ```bash
 traymond-tcp.exe -debug -noTray
@@ -168,8 +170,39 @@ traymond-tcp.exe -noTray -noHotkey
 
 ### Rust Client
 The project includes Rust client libraries:
-- `traymond_client.rs` - Basic client implementation
-- `traymond_client_lib.rs` - Library version for integration
+
+#### Basic Client (`traymond_client.rs`)
+A simple command-line client for testing and basic usage.
+
+**Usage**:
+```bash
+cargo run --bin traymond_client
+```
+
+#### Library Client (`traymond_client_lib.rs`)
+A library version for integration into other Rust applications.
+
+**Example Usage**:
+```rust
+use traymond_client_lib::{TraymondClient, TraymondCommand};
+
+// Minimize current window
+TraymondClient::minimize_current()?;
+
+// Minimize window by handle
+TraymondClient::minimize_by_handle(0x12345678)?;
+
+// Show all windows
+TraymondClient::show_all()?;
+
+// Exit Traymond
+TraymondClient::exit()?;
+
+// Check if Traymond is running
+if TraymondClient::is_running() {
+    println!("Traymond is running");
+}
+```
 
 ### Python Example
 ```python
@@ -212,12 +245,37 @@ Send-TraymondCommand "MINIMIZE_CURRENT"
 Send-TraymondCommand "SHOW_ALL"
 ```
 
+## Features
+
+### Window Management
+- **Minimize to Tray**: Hide windows to system tray with individual icons
+- **Restore Windows**: Double-click tray icons or use SHOW_ALL command
+- **Window Persistence**: Automatically restores windows after unexpected termination
+- **Restricted Windows**: Prevents hiding critical system windows (Taskbar, Desktop)
+
+### Hotkey Support
+- **Default Hotkey**: Win+Shift+Z to minimize current window
+- **Configurable**: Can be disabled with `-noHotkey` flag
+- **Non-repeating**: Prevents accidental multiple triggers
+
+### TCP Server
+- **Local Only**: Binds to 127.0.0.1 for security
+- **Single Instance**: Mutex prevents multiple instances
+- **Graceful Shutdown**: Proper cleanup on exit
+- **Error Handling**: Continues running even if client connections fail
+
+### Debug Features
+- **Console Output**: Detailed logging with `-debug` flag
+- **Connection Logging**: Shows client connections and commands
+- **Error Reporting**: Displays startup and runtime errors
+
 ## Error Handling
 
 - If the TCP server fails to start, the application will show a warning message
 - If a client connection fails, the server continues running
 - Invalid commands are ignored
 - The server automatically handles connection cleanup
+- Mutex prevents multiple instances from running simultaneously
 
 ## Security Considerations
 
@@ -225,6 +283,7 @@ Send-TraymondCommand "SHOW_ALL"
 - No authentication is required (intended for local use only)
 - Commands are processed as plain text
 - Consider firewall rules if running in restricted environments
+- Single instance enforcement prevents conflicts
 
 ## Troubleshooting
 
@@ -233,6 +292,7 @@ Send-TraymondCommand "SHOW_ALL"
 1. **Port already in use**: Another instance might be running
 2. **Connection refused**: Application not running or wrong port
 3. **No debug output**: Make sure to use the `-debug` flag
+4. **Hotkey not working**: Check if another application is using Win+Shift+Z
 
 ### Debug Information
 When running with `-debug`, you'll see:
@@ -240,6 +300,12 @@ When running with `-debug`, you'll see:
 - Client connection events
 - Received commands
 - Error messages
+- Window management operations
+
+### Instance Management
+- Only one instance can run at a time
+- Previous instances are automatically detected and prevented
+- Use Task Manager to kill stuck instances if needed
 
 ## Building
 
@@ -250,3 +316,15 @@ msbuild traymond.sln /p:Configuration=Release
 ```
 
 The executable will be placed in the `Release/` directory.
+
+### Build Requirements
+- Visual Studio 2019 or later
+- Windows SDK
+- C++17 or later
+
+## File Structure
+
+- `traymond-tcp.exe` - Main executable
+- `traymond-tcp.dat` - Window persistence file (auto-created)
+- `traymond_client.rs` - Basic Rust client
+- `traymond_client_lib.rs` - Rust library for integration
