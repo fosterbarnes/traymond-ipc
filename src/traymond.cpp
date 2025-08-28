@@ -1,8 +1,14 @@
+#define WIN32_LEAN_AND_MEAN
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
 #include <Windows.h>
 #include <windowsx.h>
+#include <shellapi.h>
 #include <string>
 #include <vector>
 #include <thread>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <stdarg.h>
 
 #define VK_Z_KEY 0x5A
 // These keys are used to send windows to tray
@@ -51,64 +57,138 @@ HANDLE ipcThread = NULL;
 HANDLE ipcStopEvent = NULL;
 bool ipcRunning = false;
 bool savePending = false;
+bool g_debugMode = false;
+
+// Debug print function that only outputs when debug mode is enabled
+void debugPrint(const char* format, ...) {
+    if (g_debugMode) {
+        va_list args;
+        va_start(args, format);
+        vprintf(format, args);
+        va_end(args);
+    }
+}
 
 // Function to parse command line arguments
-bool parseCommandLine(LPSTR lpCmdLine, bool* showTrayIcon) {
+bool parseCommandLine(LPSTR lpCmdLine, bool* showTrayIcon, bool* debugMode) {
     *showTrayIcon = true; // Default to showing tray icon
+    *debugMode = false; // Default to no debug mode
     
     if (lpCmdLine && strlen(lpCmdLine) > 0) {
         // Check for -noTray flag
         if (strstr(lpCmdLine, "-noTray") != NULL) {
             *showTrayIcon = false;
         }
+        // Check for -debug flag
+        if (strstr(lpCmdLine, "-debug") != NULL) {
+            *debugMode = true;
+        }
     }
     
     return true;
 }
 
-// IPC Server thread function
+// TCP Server thread function
 DWORD WINAPI IPCServerThread(LPVOID lpParam) {
     TRCONTEXT* context = (TRCONTEXT*)lpParam;
     
-    // Create named pipe once
-    ipcPipe = CreateNamedPipeA(
-        "\\\\.\\pipe\\traymond_ipc",
-        PIPE_ACCESS_DUPLEX,
-        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-        1,
-        sizeof(IPC_MESSAGE),
-        sizeof(IPC_MESSAGE),
-        0,
-        NULL
-    );
-    
-    if (ipcPipe == INVALID_HANDLE_VALUE) {
-        return 1; // Exit if we can't create the pipe
+    // Initialize Winsock
+    WSADATA wsaData;
+    int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
+    if (result != 0) {
+        debugPrint("Traymond IPC: WSAStartup failed with error: %d\n", result);
+        return 1;
     }
+    
+    // Create socket
+    SOCKET serverSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (serverSocket == INVALID_SOCKET) {
+        debugPrint("Traymond IPC: Socket creation failed with error: %d\n", WSAGetLastError());
+        WSACleanup();
+        return 1;
+    }
+    
+    // Set socket option to reuse address
+    int opt = 1;
+    setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
+    
+    // Bind socket
+    sockaddr_in serverAddr;
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    serverAddr.sin_port = htons(8766); // Use port 8766 for traymond (8765 is used by Python)
+    
+    if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+        debugPrint("Traymond IPC: Bind failed with error: %d\n", WSAGetLastError());
+        closesocket(serverSocket);
+        WSACleanup();
+        return 1;
+    }
+    
+    // Listen for connections
+    if (listen(serverSocket, SOMAXCONN) == SOCKET_ERROR) {
+        debugPrint("Traymond IPC: Listen failed with error: %d\n", WSAGetLastError());
+        closesocket(serverSocket);
+        WSACleanup();
+        return 1;
+    }
+    
+    debugPrint("Traymond IPC: TCP server listening on 127.0.0.1:8766\n");
+    OutputDebugStringA("Traymond IPC: TCP server listening on 127.0.0.1:8766\n");
     
     while (ipcRunning) {
-        // Wait for client connection with timeout using event
-        DWORD waitResult = WaitForSingleObject(ipcStopEvent, 50); // Check every 50ms for better responsiveness
-        if (waitResult == WAIT_OBJECT_0) {
-            // Stop event was signaled
-            break;
+        // Accept client connection
+        SOCKET clientSocket = accept(serverSocket, NULL, NULL);
+        if (clientSocket == INVALID_SOCKET) {
+            if (WaitForSingleObject(ipcStopEvent, 100) == WAIT_OBJECT_0) {
+                break;
+            }
+            continue;
         }
         
-        // Try to connect
-        if (ConnectNamedPipe(ipcPipe, NULL) || GetLastError() == ERROR_PIPE_CONNECTED) {
-            IPC_MESSAGE msg;
-            DWORD bytesRead;
+        debugPrint("Traymond IPC: Client connected successfully\n");
+        OutputDebugStringA("Traymond IPC: Client connected successfully\n");
+        
+        // Receive data from client
+        char buffer[1024];
+        int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
+        
+        if (bytesReceived > 0) {
+            buffer[bytesReceived] = '\0'; // Null terminate
+            debugPrint("Traymond IPC: Received data: %s\n", buffer);
             
-            // Read message from client
-            if (ReadFile(ipcPipe, &msg, sizeof(IPC_MESSAGE), &bytesRead, NULL)) {
-                // Post message to main thread to handle the command
-                PostMessage(context->mainWindow, WM_IPC_COMMAND, 0, (LPARAM)&msg);
+            // Parse the command
+            IPC_MESSAGE msg = {0};
+            if (strstr(buffer, "MINIMIZE_CURRENT")) {
+                msg.command = IPC_MINIMIZE_CURRENT;
+            } else if (strstr(buffer, "MINIMIZE_BY_HANDLE")) {
+                msg.command = IPC_MINIMIZE_BY_HANDLE;
+                // Extract window handle if present
+                char* handleStr = strstr(buffer, "HANDLE:");
+                if (handleStr) {
+                    unsigned long handle;
+                    sscanf_s(handleStr + 7, "%lu", &handle);
+                    msg.windowHandle = (HWND)handle;
+                }
+            } else if (strstr(buffer, "SHOW_ALL")) {
+                msg.command = IPC_SHOW_ALL;
+            } else if (strstr(buffer, "EXIT")) {
+                msg.command = IPC_EXIT;
             }
             
-            DisconnectNamedPipe(ipcPipe);
+            // Post message to main thread to handle the command
+            PostMessage(context->mainWindow, WM_IPC_COMMAND, 0, (LPARAM)&msg);
         }
+        
+        // Close client socket
+        closesocket(clientSocket);
+        debugPrint("Traymond IPC: Client disconnected\n");
+        OutputDebugStringA("Traymond IPC: Client disconnected\n");
     }
     
+    // Cleanup
+    closesocket(serverSocket);
+    WSACleanup();
     return 0;
 }
 
@@ -298,7 +378,7 @@ void exitApp() {
 
 // Creates and reads the save file to restore hidden windows in case of unexpected termination
 void startup(TRCONTEXT *context) {
-  if ((saveFile = CreateFile("traymond-ipc.dat", GENERIC_READ | GENERIC_WRITE, \
+  if ((saveFile = CreateFile("traymond-tcp.dat", GENERIC_READ | GENERIC_WRITE, \
     0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL)) == INVALID_HANDLE_VALUE) {
     MessageBoxA(NULL, "Error! Traymond IPC could not create a save file.", "Traymond IPC", MB_OK | MB_ICONERROR);
     exitApp();
@@ -431,11 +511,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
   // Parse command line arguments first
   bool showTrayIcon = true;
-  parseCommandLine(lpCmdLine, &showTrayIcon);
+  bool debugMode = false;
+  parseCommandLine(lpCmdLine, &showTrayIcon, &debugMode);
   context.showTrayIcon = showTrayIcon;
+  g_debugMode = debugMode; // Set global debug mode flag
+
+  // Create console for debug output only if debug mode is enabled
+  if (debugMode) {
+    AllocConsole();
+    freopen_s((FILE**)stdout, "CONOUT$", "w", stdout);
+    freopen_s((FILE**)stderr, "CONERR$", "w", stderr);
+    debugPrint("Traymond IPC: Starting up in debug mode...\n");
+  }
 
   // Mutex to allow only one instance
-  const char szUniqueNamedMutex[] = "traymond_ipc_mutex";
+  const char szUniqueNamedMutex[] = "traymond_tcp_mutex";
   HANDLE mutex = CreateMutex(NULL, TRUE, szUniqueNamedMutex);
   if (GetLastError() == ERROR_ALREADY_EXISTS)
   {
@@ -491,6 +581,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
   ipcThread = CreateThread(NULL, 0, IPCServerThread, &context, 0, NULL);
   if (!ipcThread) {
     MessageBoxA(NULL, "Warning! Could not start IPC server thread.", "Traymond IPC", MB_OK | MB_ICONWARNING);
+  } else {
+    debugPrint("Traymond IPC: Started successfully, waiting for connections...\n");
+    OutputDebugStringA("Traymond IPC: Started successfully, waiting for connections...\n");
   }
 
   while ((bRet = GetMessage(&msg, 0, 0, 0)) != 0)
@@ -539,7 +632,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
   CloseHandle(saveFile);
   DestroyMenu(context.trayMenu);
   DestroyWindow(context.mainWindow);
-  DeleteFile("traymond-ipc.dat"); // No save file means we have exited gracefully
+  DeleteFile("traymond-tcp.dat"); // No save file means we have exited gracefully
   UnregisterHotKey(context.mainWindow, 0);
   return msg.wParam;
 }

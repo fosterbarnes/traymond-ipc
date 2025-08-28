@@ -49,7 +49,7 @@ pub struct TraymondClient;
 impl TraymondClient {
     /// Send a command to the Traymond application
     pub fn send_command(cmd: TraymondCommand) -> Result<(), Box<dyn std::error::Error>> {
-        let mut pipe = std::fs::File::open(r"\\.\pipe\traymond_ipc")?;
+        let mut pipe = std::fs::File::open(r"\\.\pipe\traymond_tcp")?;
         
         let message: IPCMessage = cmd.into();
         
@@ -89,7 +89,7 @@ impl TraymondClient {
     
     /// Check if Traymond is running by attempting to connect to the pipe
     pub fn is_running() -> bool {
-        std::fs::File::open(r"\\.\pipe\traymond_ipc").is_ok()
+        std::fs::File::open(r"\\.\pipe\traymond_tcp").is_ok()
     }
 }
 

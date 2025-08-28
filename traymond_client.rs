@@ -15,7 +15,7 @@ const IPC_SHOW_ALL: i32 = 3;
 const IPC_EXIT: i32 = 4;
 
 fn send_ipc_command(command: i32, window_handle: usize) -> Result<(), Box<dyn std::error::Error>> {
-    let mut pipe = std::fs::File::open(r"\\.\pipe\traymond_ipc")?;
+    let mut pipe = std::fs::File::open(r"\\.\pipe\traymond_tcp")?;
     
     let message = IPCMessage {
         command,

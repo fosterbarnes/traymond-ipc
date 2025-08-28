@@ -38,11 +38,11 @@ BEGIN
 
             VALUE "FileVersion", "1.0.4"
 
-            VALUE "InternalName", "traymond-ipc.exe"
+            VALUE "InternalName", "traymond-tcp.exe"
 
             VALUE "LegalCopyright", "Copyright (C) 2020 fcFn"
 
-            VALUE "OriginalFilename", "traymond-ipc.exe"
+            VALUE "OriginalFilename", "traymond-tcp.exe"
 
             VALUE "ProductName", "Traymond IPC"
 
