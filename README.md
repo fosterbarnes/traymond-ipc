@@ -7,9 +7,9 @@ In case it terminates unexpectedly, restart the app and all the icons for minimi
 
 Windows 7 or later required.
 
-**NB**: Does **_NOT_** work with apps from the Microsoft Store (see [#3](/../../issues/3)).
+**NB**: Does **_NOT_** work with apps from the Microsoft Store.
 
-A binary is available [here](https://github.com/fcFn/traymond/releases).
+A binary is available [here](https://github.com/fosterbarnes/traymond-ipc/releases).
 
 Installing
 ------------
